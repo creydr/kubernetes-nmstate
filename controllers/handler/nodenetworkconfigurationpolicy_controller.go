@@ -340,7 +340,7 @@ func (r *NodeNetworkConfigurationPolicyReconciler) deleteEnactmentForPolicy(poli
 func (r *NodeNetworkConfigurationPolicyReconciler) shouldIncrementUnavailableNodeCount(policy *nmstatev1.NodeNetworkConfigurationPolicy, conditions *nmstateapi.ConditionList) bool {
 	return !enactmentstatus.IsProgressing(conditions) &&
 		(policy.Status.LastUnavailableNodeCountUpdate == nil ||
-			time.Now().Sub(policy.Status.LastUnavailableNodeCountUpdate.Time) < (nmstate.DesiredStateConfigurationTimeout+probe.ProbesTotalTimeout))
+			time.Since(policy.Status.LastUnavailableNodeCountUpdate.Time) < (nmstate.DesiredStateConfigurationTimeout+probe.ProbesTotalTimeout))
 }
 
 func (r *NodeNetworkConfigurationPolicyReconciler) incrementUnavailableNodeCount(policy *nmstatev1.NodeNetworkConfigurationPolicy) error {
@@ -351,7 +351,9 @@ func (r *NodeNetworkConfigurationPolicyReconciler) incrementUnavailableNodeCount
 	}
 	maxUnavailable, err := node.MaxUnavailableNodeCount(r.APIClient, policy)
 	if err != nil {
-		return err
+		r.Log.Info(
+			fmt.Sprintf("failed calculating limit of max unavailable nodes, defaulting to %d, err: %s", maxUnavailable, err.Error()),
+		)
 	}
 	if policy.Status.UnavailableNodeCount >= maxUnavailable {
 		return apierrors.NewConflict(schema.GroupResource{Resource: "nodenetworkconfigurationpolicies"}, policy.Name, fmt.Errorf("maximal number of %d nodes are already processing policy configuration", policy.Status.UnavailableNodeCount))
@@ -412,15 +414,4 @@ func (r *NodeNetworkConfigurationPolicyReconciler) forceNNSRefresh(name string) 
 	if err != nil {
 		log.WithValues("error", err).Info("WARNING: failed forcing NNS refresh, it will be refreshed after regular period")
 	}
-}
-
-func desiredState(object runtime.Object) (nmstateapi.State, error) {
-	var state nmstateapi.State
-	switch v := object.(type) {
-	default:
-		return nmstateapi.State{}, fmt.Errorf("unexpected type %T", v)
-	case *nmstatev1.NodeNetworkConfigurationPolicy:
-		state = v.Spec.DesiredState
-	}
-	return state, nil
 }
