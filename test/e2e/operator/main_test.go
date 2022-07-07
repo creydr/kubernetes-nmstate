@@ -20,7 +20,6 @@ package operator
 import (
 	"context"
 	"os"
-	"strings"
 	"testing"
 
 	. "github.com/onsi/ginkgo/v2"
@@ -99,16 +98,19 @@ func podsShouldBeDistributedAtNodes(selectedNodes []corev1.Node, listOptions ...
 	}
 }
 
-func isKubevirtciCluster() bool {
-	return strings.Contains(os.Getenv("KUBECONFIG"), "kubevirtci")
-}
-
 func controlPlaneNodes() []corev1.Node {
 	nodeList := &corev1.NodeList{}
 	Expect(testenv.Client.List(context.TODO(), nodeList, client.HasLabels{"node-role.kubernetes.io/control-plane"})).To(Succeed())
 	if len(nodeList.Items) == 0 {
 		Expect(testenv.Client.List(context.TODO(), nodeList, client.HasLabels{"node-role.kubernetes.io/master"})).To(Succeed())
 	}
+	return nodeList.Items
+}
+
+func workerNodes() []corev1.Node {
+	nodeList := &corev1.NodeList{}
+	Expect(testenv.Client.List(context.TODO(), nodeList, client.HasLabels{"node-role.kubernetes.io/worker"})).To(Succeed())
+
 	return nodeList.Items
 }
 

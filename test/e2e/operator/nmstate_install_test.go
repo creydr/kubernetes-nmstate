@@ -46,13 +46,19 @@ var _ = Describe("NMState operator", func() {
 	}
 	DescribeTable("for control-plane size",
 		func(tc controlPlaneTest) {
-			if isKubevirtciCluster() && tc.withMultiNode {
-				kubevirtciReset := increaseKubevirtciControlPlane()
-				defer kubevirtciReset()
+			cpNodes := controlPlaneNodes()
+			workers := workerNodes()
+
+			if tc.withMultiNode && len(cpNodes) < 2 {
+				if len(workers) > 0 { // only label if additional worker are available (e.g. not in case of single node cluster)
+					undoFunc := labelAsControlPlaneNodes(workers[0])
+					defer undoFunc()
+				}
 			}
-			if isKubevirtciCluster() && !tc.withMultiNode {
-				uncordonNodeFunc := drainNode("node02")
-				defer uncordonNodeFunc()
+			if !tc.withMultiNode && len(cpNodes) > 1 {
+				allNodesExceptFirstCpNode := append(cpNodes[1:], workers...)
+				uncordonNodesFunc := drainNodes(allNodesExceptFirstCpNode...)
+				defer uncordonNodesFunc()
 			}
 
 			if tc.withMultiNode && len(controlPlaneNodes()) < 2 {
@@ -190,8 +196,7 @@ var _ = Describe("NMState operator", func() {
 	})
 })
 
-func drainNode(nodeName string) func() {
-	node := &corev1.Node{}
+func drainNodes(nodes ...corev1.Node) func() {
 	drainer := drain.Helper{
 		Ctx:                 context.TODO(),
 		Client:              testenv.KubeClient,
@@ -200,63 +205,65 @@ func drainNode(nodeName string) func() {
 		ErrOut:              GinkgoWriter,
 	}
 
-	err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
-		err := testenv.Client.Get(context.TODO(), client.ObjectKey{Name: nodeName}, node)
-		if err != nil {
-			return err
-		}
-
-		By(fmt.Sprintf("Cordon kubevirtci cluster node %s", node.Name))
-		err = drain.RunCordonOrUncordon(&drainer, node, true)
-		if err != nil {
-			return err
-		}
-
-		By(fmt.Sprintf("Drain kubevirtci cluster node %s", node.Name)) //not really needed but to be sure to remove running pods from node...
-		return drain.RunNodeDrain(&drainer, node.Name)
-	})
-	Expect(err).ToNot(HaveOccurred())
-
-	return func() {
+	for _, node := range nodes {
 		err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
-			err := testenv.Client.Get(context.TODO(), client.ObjectKey{Name: nodeName}, node)
+			By(fmt.Sprintf("Cordon cluster node %s", node.Name))
+			err := drain.RunCordonOrUncordon(&drainer, &node, true)
 			if err != nil {
 				return err
 			}
 
-			By(fmt.Sprintf("Uncordon kubevirtci cluster node %s", node.Name))
-			return drain.RunCordonOrUncordon(&drainer, node, false)
+			By(fmt.Sprintf("Drain cluster node %s", node.Name))
+			return drain.RunNodeDrain(&drainer, node.Name)
 		})
 		Expect(err).ToNot(HaveOccurred())
 	}
+
+	return func() {
+		for _, oldNode := range nodes {
+			node := &corev1.Node{}
+			err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
+				err := testenv.Client.Get(context.TODO(), client.ObjectKey{Name: oldNode.Name}, node)
+				if err != nil {
+					return err
+				}
+
+				By(fmt.Sprintf("Uncordon cluster node %s", node.Name))
+				return drain.RunCordonOrUncordon(&drainer, node, false)
+			})
+			Expect(err).ToNot(HaveOccurred())
+		}
+	}
 }
 
-func increaseKubevirtciControlPlane() func() {
-	secondNodeName := "node02"
-	node := &corev1.Node{}
-	err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
-		err := testenv.Client.Get(context.TODO(), client.ObjectKey{Name: secondNodeName}, node)
-		if err != nil {
-			return err
-		}
-		By(fmt.Sprintf("Configure kubevirtci cluster node %s as control plane", node.Name))
-		node.Labels["node-role.kubernetes.io/control-plane"] = ""
-		node.Labels["node-role.kubernetes.io/master"] = ""
-		return testenv.Client.Update(context.TODO(), node)
-	})
-	Expect(err).ToNot(HaveOccurred())
-	return func() {
+func labelAsControlPlaneNodes(nodes ...corev1.Node) func() {
+	for _, node := range nodes {
 		err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
-			err := testenv.Client.Get(context.TODO(), client.ObjectKey{Name: secondNodeName}, node)
-			if err != nil {
-				return err
-			}
-			By(fmt.Sprintf("Configure kubevirtci cluster node %s as non control plane", node.Name))
-			delete(node.Labels, "node-role.kubernetes.io/control-plane")
-			delete(node.Labels, "node-role.kubernetes.io/master")
-			return testenv.Client.Update(context.TODO(), node)
+			By(fmt.Sprintf("Configure cluster node %s as control plane", node.Name))
+			node.Labels["node-role.kubernetes.io/control-plane"] = ""
+			node.Labels["node-role.kubernetes.io/master"] = ""
+			delete(node.Labels, "node-role.kubernetes.io/worker")
+			return testenv.Client.Update(context.TODO(), &node)
 		})
 		Expect(err).ToNot(HaveOccurred())
+	}
+
+	return func() {
+		for _, oldNode := range nodes {
+			err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
+				node := &corev1.Node{}
+				err := testenv.Client.Get(context.TODO(), client.ObjectKey{Name: oldNode.Name}, node)
+				if err != nil {
+					return err
+				}
+				By(fmt.Sprintf("Configure cluster node %s as non control plane", node.Name))
+				delete(node.Labels, "node-role.kubernetes.io/control-plane")
+				delete(node.Labels, "node-role.kubernetes.io/master")
+				node.Labels["node-role.kubernetes.io/worker"] = ""
+				return testenv.Client.Update(context.TODO(), node)
+			})
+			Expect(err).ToNot(HaveOccurred())
+		}
 	}
 }
 
